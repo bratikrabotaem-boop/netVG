@@ -243,7 +243,7 @@ async function loadData(){
 
   try {
     const r=await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=${INTERVAL}&limit=500`
+      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=${INTERVAL}&limit=1000`
     );
     const d=await r.json();
 
