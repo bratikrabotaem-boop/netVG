@@ -99,6 +99,26 @@ body {
     width: 100%; 
 }
 
+/* ===== НОВОЕ: ЛЕГЕНДА ОБЪЕМА ===== */
+#vol-legend {
+    position: absolute;
+    top: 6px;
+    left: 10px;
+    z-index: 10;
+    font-family: 'Monaco', 'Consolas', monospace;
+    font-size: 11px;
+    color: #9ca3af;
+    pointer-events: none;
+    background: rgba(18, 20, 23, 0.8); /* Полупрозрачный фон для читаемости */
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+/* Цвета для цифр в легенде */
+.val-buy { color: #1fc77b; }
+.val-sell { color: #e04b4b; }
+.val-total { color: #e6e6e6; }
+
 </style>
 </head>
 
@@ -115,13 +135,10 @@ body {
       <button onclick="setSymbol('SOLUSDT')">SOL</button>
       <button onclick="setSymbol('XRPUSDT')">XRP</button>
       <button onclick="setSymbol('DOGEUSDT')">DOGE</button>
-      <button onclick="setSymbol('PEPEUSDT')">PEPE</button>
       <button onclick="setSymbol('NOTUSDT')">NOT</button>
       <button onclick="setSymbol('BOMEUSDT')">BOME</button>
       <button onclick="setSymbol('MEMEUSDT')">MEME</button>
       <button onclick="setSymbol('TRUMPUSDT')">TRUMP</button>
-      <button onclick="setSymbol('PENGUUSDT')">PENGU</button>
-      <button onclick="setSymbol('TONUSDT')">TON</button>
     </div>
 
     <div class="tf-buttons" id="tf-buttons">
@@ -139,6 +156,7 @@ body {
   </div>
   
   <div class="chart-box">
+      <div id="vol-legend">LOADING...</div>
       <div id="volume"></div>
   </div>
 </div>
@@ -156,25 +174,33 @@ function formatTimeNoSeconds(time) {
   return `${date} ${hh}:${mm}`;
 }
 
+// Форматтер для больших чисел (1.2M, 500k)
+const volFormatter = new Intl.NumberFormat('en-US', {
+    notation: "compact",
+    maximumFractionDigits: 1
+});
+
 /* ===== STATE ===== */
 let INTERVAL = '1h';
 let SYMBOL = 'BTCUSDT';
 let ws = null;
 let sessionId = 0;
+// НОВОЕ: Хранилище подробных данных по времени
+let volumeDetailsMap = new Map();
+let lastTime = 0; // Время последней свечи
 
 /* ===== CHART CONFIG (Цвета и поведение из первого кода) ===== */
 const commonOpts = {
-  layout: { background: { color: '#121417' }, textColor: '#9ca3af' }, // Цвета из 1 кода
-  grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } }, // Сетка из 1 кода
+  layout: { background: { color: '#121417' }, textColor: '#9ca3af' }, 
+  grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } }, 
   localization: { timeFormatter: formatTimeNoSeconds },
   timeScale: {
     timeVisible: true, secondsVisible: false, borderColor: '#1f2937',
     rightBarStaysOnScroll: true, lockVisibleTimeRangeOnResize: true
   },
   crosshair: { mode: 0 },
-  // ВАЖНО: Настройки скролла и зума как в первом коде
   handleScroll: { 
-      vertTouchDrag: false, // Разрешает скролл страницы пальцем
+      vertTouchDrag: false, 
       horzTouchDrag: true 
   },
   handleScale: { 
@@ -186,6 +212,7 @@ const commonOpts = {
 /* ===== CREATE CHARTS ===== */
 const priceContainer = document.getElementById('price');
 const volumeContainer = document.getElementById('volume');
+const legendContainer = document.getElementById('vol-legend');
 
 const priceChart = LightweightCharts.createChart(priceContainer, {
   ...commonOpts,
@@ -222,18 +249,45 @@ syncCharts(priceChart,volumeChart);
 syncCharts(volumeChart,priceChart);
 
 function resizeCharts(){
-  // Используем offsetWidth родителя для точного размера внутри рамки
   priceChart.resize(priceContainer.parentElement.offsetWidth, 420);
   volumeChart.resize(volumeContainer.parentElement.offsetWidth, 140);
 }
 window.addEventListener('resize',resizeCharts);
-// Дополнительный вызов для инициализации
 setTimeout(resizeCharts, 100);
+
+/* ===== NEW: LEGEND UPDATE LOGIC ===== */
+function updateLegendHTML(total, buy, sell) {
+    legendContainer.innerHTML = `
+        TOTAL: <span class="val-total">${volFormatter.format(total)}</span>&nbsp;
+        BUY: <span class="val-buy">${volFormatter.format(buy)}</span>&nbsp;
+        SELL: <span class="val-sell">${volFormatter.format(sell)}</span>
+    `;
+}
+
+// Обработчик движения курсора
+function crosshairHandler(param) {
+    const time = param.time;
+    if (time && volumeDetailsMap.has(time)) {
+        const d = volumeDetailsMap.get(time);
+        updateLegendHTML(d.total, d.buy, d.sell);
+    } else {
+        // Если курсор ушел или нет данных - показываем последнюю свечу
+        if(volumeDetailsMap.has(lastTime)){
+            const d = volumeDetailsMap.get(lastTime);
+            updateLegendHTML(d.total, d.buy, d.sell);
+        }
+    }
+}
+
+// Подписываем оба графика на движение
+priceChart.subscribeCrosshairMove(crosshairHandler);
+volumeChart.subscribeCrosshairMove(crosshairHandler);
 
 /* ===== DATA LOADING ===== */
 async function loadData(){
   sessionId++;
   const currentSession=sessionId;
+  volumeDetailsMap.clear(); // Чистим карту при смене монеты
 
   if(ws){
     ws.onmessage=null;
@@ -243,7 +297,7 @@ async function loadData(){
 
   try {
     const r=await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=${INTERVAL}&limit=1000`
+      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=${INTERVAL}&limit=500`
     );
     const d=await r.json();
 
@@ -252,7 +306,16 @@ async function loadData(){
       const t=k[0]/1000;
       c.push({time:t,open:+k[1],high:+k[2],low:+k[3],close:+k[4]});
       
-      const net=2*k[10]-k[7];
+      // Расчеты для легенды
+      const totalVol = +k[7]; // Quote Asset Volume (USDT)
+      const buyVol = +k[10];  // Taker Buy Quote Asset Volume
+      const sellVol = totalVol - buyVol;
+      const net = buyVol - sellVol; // Логика как раньше: Net = Buy - Sell (или 2*Buy - Total)
+
+      // Сохраняем в карту
+      volumeDetailsMap.set(t, { total: totalVol, buy: buyVol, sell: sellVol });
+      lastTime = t; // Обновляем последнее время
+
       v.push({
         time:t,
         value:net/1e6,
@@ -263,9 +326,14 @@ async function loadData(){
     candles.setData(c);
     volumeSeries.setData(v);
     
+    // Обновляем легенду сразу
+    if(volumeDetailsMap.has(lastTime)) {
+        const d = volumeDetailsMap.get(lastTime);
+        updateLegendHTML(d.total, d.buy, d.sell);
+    }
+    
     priceChart.timeScale().fitContent();
-    resizeCharts(); // Убеждаемся, что размер правильный
-
+    resizeCharts(); 
     startRealtime(currentSession);
   } catch(err) {
     console.error("Load failed", err);
@@ -293,13 +361,29 @@ function startRealtime(currentSession){
       close:+k.c
     });
 
-    const currentNet = (2 * +k.Q - +k.q);
+    // Расчеты для реалтайма
+    const totalVol = +k.q; // Quote Volume
+    const buyVol = +k.Q;   // Taker Buy Volume
+    const sellVol = totalVol - buyVol;
+    const currentNet = buyVol - sellVol;
+
+    // Обновляем карту и последнее время
+    volumeDetailsMap.set(time, { total: totalVol, buy: buyVol, sell: sellVol });
+    lastTime = time;
 
     volumeSeries.update({
       time,
       value:currentNet/1e6,
       color:currentNet>=0?'#1fc77b':'#e04b4b'
     });
+    
+    // Если мышь не на графике, обновляем легенду на текущую свечу
+    // (упрощенная проверка - просто обновляем если это последняя свеча)
+    // Но лучше оставить управление через crosshairHandler, он сам покажет lastTime если нет фокуса
+    // Однако, если мы просто смотрим на график без мыши - надо обновлять цифры онлайн:
+    const d = volumeDetailsMap.get(lastTime);
+    // Проверка: если курсор не двигается, можно принудительно обновить, 
+    // но чтобы не мерцало под мышкой, оставим пассивное обновление при отсутствии фокуса.
   };
 
   ws.onclose=()=>{
